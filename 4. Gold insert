@@ -1,0 +1,59 @@
+
+
+
+  
+
+---- Merging all silver tables into gold
+
+INSERT INTO GOLD.EV_STAR.FACT_TRANSACTION (
+    TRANSACTION_ID, 
+    CITY_ID, 
+    STATE_ID, 
+    MODEL_ID, 
+    VALUE, 
+    TAX, 
+    DATE_ID, 
+    SOURCE
+)
+SELECT 
+    TRANSACTION_ID, 
+    CITY_ID, 
+    STATE_ID, 
+    MODEL_ID, 
+    VALUE, 
+    TAX, 
+    FULL_DATE AS DATE_ID,
+    'CSV_FILE_2022' AS SOURCE  -- Define the source
+FROM 
+    SILVER.CSV_FILE_2022.FACT_TRANSACTION
+
+UNION ALL
+
+SELECT 
+    TRANSACTION_ID, 
+    CITY_ID, 
+    STATE_ID, 
+    MODEL_ID, 
+    VALUE, 
+    TAX, 
+    FULL_DATE AS DATE_ID,
+    'JSON_2024' AS SOURCE  -- Define the source
+FROM 
+    SILVER.JSON_2024.FACT_TRANSACTION
+
+UNION ALL
+
+SELECT 
+    TRANSACTION_ID, 
+    CITY_ID, 
+    STATE_ID, 
+    MODEL_ID, 
+    VALUE, 
+    TAX, 
+    FULL_DATE AS DATE_ID,
+    'DB_2024' AS SOURCE  -- Define the source
+FROM 
+    SILVER.DB_2O24.FACT_TRANSACTION;
+
+
+SELECT * FROM GOLD.EV_STAR.FACT_TRANSACTION;
