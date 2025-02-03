@@ -1,0 +1,99 @@
+-- 1. Table Creation: Create Landing Stage Table
+CREATE OR REPLACE TABLE LANDING.DB_2024.TEMP_TABLE (
+    CITY VARCHAR(255),
+    STATE VARCHAR(255),
+    VALUE FLOAT,
+    TAX FLOAT,
+    PRODUCT VARCHAR(255),
+    DATE DATE,
+    DB_TIMESTAMP TIMESTAMP,  -- Timestamp for when the data is inserted into the database
+    ETL_TIMESTAMP TIMESTAMP  -- Timestamp for when the ETL job runs
+);
+
+-- 2. Data Ingestion: Load Data into Landing Stage
+INSERT INTO LANDING.DB_2024.TEMP_TABLE (
+    CITY, STATE, VALUE, TAX, PRODUCT, DATE, DB_TIMESTAMP, ETL_TIMESTAMP
+)
+SELECT 
+    t.$1 AS CITY,
+    t.$2 AS STATE,
+    t.$3 AS VALUE,
+    t.$4 AS TAX,
+    t.$5 AS PRODUCT,
+    TO_DATE(t.$6, 'DD/MM/YYYY HH24:MI') AS DATE,  -- Ensures correct date format
+    TO_TIMESTAMP(t.$7, 'DD/MM/YYYY HH24:MI') AS DB_TIMESTAMP,  -- Corrected DB timestamp format
+    CURRENT_TIMESTAMP() AS ETL_TIMESTAMP  -- Timestamp when the query is run
+FROM 
+    @LANDING.CSV_STAGE/db_2024.csv (FILE_FORMAT => LANDING.CSV_FILE_FORMAT) t;
+
+-- 3. Data Aggregation: Aggregate Data and Load into Bronze Stage
+CREATE OR REPLACE TABLE BRONZE.DB_2024.AGGREGATED_PURCHASES (
+    CITY STRING,
+    STATE STRING,
+    PRODUCT STRING,
+    FULL_DATE DATE,
+    VALUE NUMBER(38,2),
+    TAX NUMBER(38,2),
+    ETL_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+INSERT INTO BRONZE.DB_2024.AGGREGATED_PURCHASES (
+    CITY, STATE, PRODUCT, FULL_DATE, VALUE, TAX, ETL_TIMESTAMP
+)
+SELECT 
+    CITY,
+    STATE,
+    PRODUCT,
+    DATE AS FULL_DATE,
+    SUM(VALUE) AS VALUE,  -- Aggregates VALUE by city, state, and product
+    SUM(TAX) AS TAX,  -- Aggregates TAX by city, state, and product
+    CURRENT_TIMESTAMP() AS ETL_TIMESTAMP
+FROM LANDING.DB_2024.TEMP_TABLE
+GROUP BY 
+    CITY,
+    STATE,
+    PRODUCT,
+    FULL_DATE;
+
+-- 4. Table Creation: Create Silver Stage Fact Table
+-- The SILVER stage will store the fact table, which includes transactions linked to dimension tables for CITY and PRODUCT.
+USE DATABASE SILVER;
+CREATE SCHEMA IF NOT EXISTS DB_2O24;
+USE SCHEMA DB_2O24;
+
+CREATE OR REPLACE TABLE SILVER.DB_2O24.FACT_TRANSACTION (
+    TRANSACTION_ID NUMBER(38,0) NOT NULL AUTOINCREMENT START 1 INCREMENT 1 NOORDER,
+    CITY_ID NUMBER(38,0),
+    STATE_ID NUMBER(38,0) NOT NULL,
+    MODEL_ID NUMBER(38,0),
+    VALUE FLOAT NOT NULL,
+    TAX FLOAT NOT NULL,
+    FULL_DATE DATE,
+    ETL_TIMESTAMP VARCHAR(16777216),
+    PRIMARY KEY (TRANSACTION_ID),
+    FOREIGN KEY (MODEL_ID) REFERENCES GOLD.EV_STAR.DIM_PRODUCT(MODEL_ID),
+    FOREIGN KEY (CITY_ID) REFERENCES GOLD.EV_STAR.DIM_CITY(CITY_ID)
+);
+
+-- 5. Data Transformation: Join and Move Data from Bronze to Silver
+-- Data is aggregated and loaded into the Silver stage (fact table) for further analysis and reporting.
+INSERT INTO SILVER.DB_2O24.FACT_TRANSACTION (CITY_ID, STATE_ID, MODEL_ID, VALUE, TAX, FULL_DATE, ETL_TIMESTAMP)
+SELECT 
+    c.CITY_ID, 
+    c.STATE_ID, 
+    p.MODEL_ID, 
+    s.VALUE, 
+    s.TAX, 
+    s.FULL_DATE,
+    CURRENT_TIMESTAMP() AS ETL_TIMESTAMP
+FROM 
+    BRONZE.DB_2024.AGGREGATED_PURCHASES s
+JOIN 
+    GOLD.EV_STAR.DIM_CITY c 
+    ON s.CITY = c.NAME AND s.STATE = c.STATE
+JOIN 
+    GOLD.EV_STAR.DIM_PRODUCT p 
+    ON s.PRODUCT = p.NAME;
+
+-- 6. Final Verification: Verify Data Loaded into Silver Stage
+SELECT * FROM SILVER.DB_2O24.FACT_TRANSACTION;
