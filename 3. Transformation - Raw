@@ -1,0 +1,814 @@
+-- csv 2022 and csv 2023 - the later has a column name changed. I have one file for the entire year produced in retrospect,. There's change data capture necesary
+-- db_hourly granularity. Single file
+-- json, the second file has inserts, deletes, upadtes -- two files, it's a snapshot done on Dec 30 and 31 of the year in retrospect. There's change data capture necesary
+  
+
+  
+----------------------------------------------------------------
+----- DB 
+
+
+-- stage the data from the internal stage into a table
+
+
+CREATE OR REPLACE TABLE LANDING.DB_2024.TEMP_TABLE (
+    CITY VARCHAR(255),
+    STATE VARCHAR(255),
+    VALUE FLOAT,
+    TAX FLOAT,
+    PRODUCT VARCHAR(255),
+    DATE DATE,
+    DB_TIMESTAMP TIMESTAMP,  -- Field to store the DB timestamp
+    ETL_TIMESTAMP TIMESTAMP  -- Field to store the ETL timestamp
+);
+
+INSERT INTO LANDING.DB_2024.TEMP_TABLE (
+    CITY, 
+    STATE, 
+    VALUE, 
+    TAX, 
+    PRODUCT, 
+    DATE, 
+    DB_TIMESTAMP, 
+    ETL_TIMESTAMP
+)
+SELECT 
+    t.$1 AS CITY,
+    t.$2 AS STATE,
+    t.$3 AS VALUE,
+    t.$4 AS TAX,
+    t.$5 AS PRODUCT,
+    TO_DATE(t.$6, 'DD/MM/YYYY HH24:MI') AS DATE,  -- Ensures correct date format
+    TO_TIMESTAMP(t.$7, 'DD/MM/YYYY HH24:MI') AS DB_TIMESTAMP,  -- Corrected DB timestamp format
+    CURRENT_TIMESTAMP() AS ETL_TIMESTAMP  -- Timestamp when the query is run
+FROM 
+    @LANDING.CSV_STAGE/db_2024.csv (FILE_FORMAT => LANDING.CSV_FILE_FORMAT) t;
+
+
+
+--- aggregate the data and mvoe it to bronze
+
+
+CREATE OR REPLACE TABLE BRONZE.DB_2024.AGGREGATED_PURCHASES (
+    CITY STRING,
+    STATE STRING,
+    PRODUCT STRING,
+    FULL_DATE DATE,
+    VALUE NUMBER(38,2),
+    TAX NUMBER(38,2),
+    ETL_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+
+INSERT INTO BRONZE.DB_2024.AGGREGATED_PURCHASES (
+    CITY, STATE, PRODUCT, FULL_DATE, VALUE, TAX, ETL_TIMESTAMP
+)
+SELECT 
+    CITY,
+    STATE,
+    PRODUCT,
+    DATE AS FULL_DATE,
+    SUM(VALUE) AS VALUE,
+    SUM(TAX) AS TAX,
+    CURRENT_TIMESTAMP() AS ETL_TIMESTAMP
+FROM LANDING.DB_2024.TEMP_TABLE
+GROUP BY 
+    CITY,
+    STATE,
+    PRODUCT,
+    FULL_DATE;
+
+
+--- in silver, prepare the tables 
+
+
+    USE DATABASE SILVER;
+    CREATE SCHEMA DB_2O24;
+    USE SCHEMA DB_2O24;
+
+    create or replace TABLE SILVER.DB_2O24.FACT_TRANSACTION (
+	TRANSACTION_ID NUMBER(38,0) NOT NULL autoincrement start 1 increment 1 noorder,
+	CITY_ID NUMBER(38,0),
+	STATE_ID NUMBER(38,0) NOT NULL,
+	MODEL_ID NUMBER(38,0),
+	VALUE FLOAT NOT NULL,
+	TAX FLOAT NOT NULL,
+	FULL_DATE DATE,
+	ETL_TIMESTAMP VARCHAR(16777216),
+	primary key (TRANSACTION_ID),
+	foreign key (MODEL_ID) references GOLD.EV_STAR.DIM_PRODUCT(MODEL_ID),
+	foreign key (CITY_ID) references GOLD.EV_STAR.DIM_CITY(CITY_ID)
+);
+
+
+--- transform into fact id tables and Move the data to silver
+
+select * from BRONZE.DB_2024.AGGREGATED_PURCHASES;
+
+
+INSERT INTO SILVER.DB_2O24.FACT_TRANSACTION (CITY_ID, STATE_ID, MODEL_ID, VALUE, TAX, FULL_DATE, etl_timestamp)
+SELECT 
+    c.CITY_ID, 
+    c.STATE_ID, 
+    p.MODEL_ID, 
+    s.VALUE, 
+    s.TAX, 
+    s. FULL_DATE,
+    CURRENT_TIMESTAMP() AS etl_timestamp
+FROM 
+    BRONZE.DB_2024.AGGREGATED_PURCHASES s
+JOIN 
+    GOLD.EV_STAR.DIM_CITY c 
+    ON s.CITY = c.NAME AND s.STATE = c.STATE
+JOIN 
+    GOLD.EV_STAR.DIM_PRODUCT p 
+    ON s.Product = p.NAME;
+
+
+
+select *from SILVER.DB_2O24.FACT_TRANSACTION;
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+
+------------------------------------------------ CSV FILES -- csv 2022 and csv 2023 - the later has a column name changed
+
+-- because i am using $ the name column difference makes no difference
+
+
+-- create landing 
+
+
+
+USE DATABASE LANDING;
+
+USE SCHEMA LANDING;
+
+DROP TABLE DB_2024;
+
+USE SCHEMA CSV_2022;
+
+CREATE OR REPLACE TABLE LANDING.CSV_2022._30dec_snapshot_data (
+    transaction_id STRING,
+    CITY STRING,
+    STATE STRING,
+    VALUE FLOAT,
+    TAX FLOAT,
+    Product STRING,
+    DATE STRING,
+    DB_timestamp STRING,  -- Keep the original ETL_timestamp as DB_timestamp
+    etl_timestamp STRING
+);
+
+CREATE OR REPLACE TABLE LANDING.CSV_2022._31dec_snapshot_data (
+    transaction_id STRING,
+    CITY STRING,
+    STATE STRING,
+    VALUE FLOAT,
+    TAX FLOAT,
+    Product STRING,
+    DATE STRING,
+    DB_timestamp STRING,  -- Keep the original ETL_timestamp as DB_timestamp
+    etl_timestamp STRING
+);
+
+
+INSERT INTO LANDING.CSV_2022._30dec_snapshot_data 
+    (transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, etl_timestamp)
+SELECT 
+    t.$8 AS transaction_id,  
+    t.$1 AS CITY,             
+    t.$2 AS STATE,            
+    t.$4 AS VALUE,            
+    t.$3 AS TAX,              
+    t.$5 AS Product,          
+    t.$6 AS DATE,             
+    t.$7 AS DB_timestamp,     
+    CURRENT_TIMESTAMP() AS etl_timestamp  
+FROM 
+    @LANDING.CSV_STAGE/csv_2022-30Dec.csv (FILE_FORMAT => LANDING.CSV_FILE_FORMAT) t;
+
+
+
+INSERT INTO LANDING.CSV_2022._31dec_snapshot_data 
+    (transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, etl_timestamp)
+SELECT 
+    t.$8 AS transaction_id,  
+    t.$1 AS CITY,             
+    t.$2 AS STATE,            
+    t.$4 AS VALUE,            
+    t.$3 AS TAX,              
+    t.$5 AS Product,          
+    t.$6 AS DATE,             
+    t.$7 AS DB_timestamp,     
+    CURRENT_TIMESTAMP() AS etl_timestamp  
+FROM 
+    @LANDING.CSV_STAGE/csv_2022-31Dec.csv (FILE_FORMAT => LANDING.CSV_FILE_FORMAT) t;
+
+    
+
+
+
+select * from LANDING.CSV_2022._30dec_snapshot_data;
+select * from LANDING.CSV_2022._31dec_snapshot_data;
+
+
+
+
+
+-- create bronze table
+
+USE DATABASE BRONZE;
+
+USE SCHEMA csv_file_2022;
+
+create or replace TABLE BRONZE.csv_file_2022._30DEC_SNAPSHOT_DATA (
+    transaction_id STRING,
+	CITY VARCHAR(16777216),
+	STATE VARCHAR(16777216),
+	VALUE FLOAT,
+	TAX FLOAT,
+	PRODUCT VARCHAR(16777216),
+	DATE DATE,
+	DB_TIMESTAMP VARCHAR(16777216),
+	ETL_TIMESTAMP VARCHAR(16777216)
+);
+
+create or replace TABLE BRONZE.csv_file_2022._31DEC_SNAPSHOT_DATA (
+    transaction_id STRING,
+	CITY VARCHAR(16777216),
+	STATE VARCHAR(16777216),
+	VALUE FLOAT,
+	TAX FLOAT,
+	PRODUCT VARCHAR(16777216),
+	DATE DATE,
+	DB_TIMESTAMP VARCHAR(16777216),
+	ETL_TIMESTAMP VARCHAR(16777216)
+);
+
+
+
+--- adjust date and insert into bronze
+
+INSERT INTO BRONZE.csv_file_2022._30DEC_SNAPSHOT_DATA (
+    transaction_id,
+    CITY,
+    STATE,
+    VALUE,
+    TAX,
+    PRODUCT,
+    DATE,
+    DB_TIMESTAMP,
+    ETL_TIMESTAMP
+)
+SELECT
+    transaction_id,
+    CITY,
+    STATE,
+    VALUE,
+    TAX,
+    PRODUCT,
+    TO_DATE(DATE, 'DD/MM/YYYY') AS DATE, -- Cast the DATE column using the correct format
+    DB_TIMESTAMP,
+    CURRENT_TIMESTAMP() AS etl_timestamp
+FROM LANDING.CSV_2022._30DEC_SNAPSHOT_DATA;
+
+
+
+
+INSERT INTO BRONZE.csv_file_2022._31DEC_SNAPSHOT_DATA (
+    transaction_id,
+    CITY,
+    STATE,
+    VALUE,
+    TAX,
+    PRODUCT,
+    DATE,
+    DB_TIMESTAMP,
+    ETL_TIMESTAMP
+)
+SELECT
+    transaction_id,
+    CITY,
+    STATE,
+    VALUE,
+    TAX,
+    PRODUCT,
+    TO_DATE(DATE, 'DD/MM/YYYY') AS DATE, -- Cast the DATE column using the correct format
+    DB_TIMESTAMP,
+    CURRENT_TIMESTAMP() AS etl_timestamp
+FROM LANDING.CSV_2022._31DEC_SNAPSHOT_DATA;
+
+
+
+create or replace TABLE BRONZE.CSV_FILE_2022._RECONCILED_SNAPSHOT_DATA (
+    transaction_id STRING,
+	CITY VARCHAR(16777216),
+	STATE VARCHAR(16777216),
+	VALUE FLOAT,
+	TAX FLOAT,
+	PRODUCT VARCHAR(16777216),
+	DATE DATE,
+	DB_TIMESTAMP VARCHAR(16777216),
+	ETL_TIMESTAMP VARCHAR(16777216),
+	SOURCE VARCHAR(16777216),
+	LATEST_VERSION_FLAG BOOLEAN
+);
+
+select * FROM BRONZE.csv_file_2022._30DEC_SNAPSHOT_DATA;
+select * FROM BRONZE.csv_file_2022._31DEC_SNAPSHOT_DATA;
+
+
+
+
+
+
+
+
+   
+---- do initial load 
+
+
+INSERT INTO BRONZE.CSV_FILE_2022._reconciled_snapshot_data (
+    transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, etl_timestamp, source, latest_version_flag
+)
+SELECT 
+    transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, 
+    CURRENT_TIMESTAMP() AS etl_timestamp, 
+    'snapshot_30dec' AS source,
+    TRUE AS latest_version_flag
+FROM BRONZE.csv_file_2022._30dec_snapshot_data;
+
+
+
+---- Change data capture
+
+MERGE INTO BRONZE.CSV_FILE_2022._RECONCILED_SNAPSHOT_DATA AS target
+USING (
+    SELECT 
+        s2.TRANSACTION_ID,
+        s2.CITY,
+        s2.STATE,
+        s2.VALUE,
+        s2.TAX,
+        s2.PRODUCT,
+        s2.DATE,
+        s2.DB_TIMESTAMP,
+        CURRENT_TIMESTAMP() AS ETL_TIMESTAMP,
+        'snapshot_31dec' AS SOURCE,
+        TRUE AS LATEST_VERSION_FLAG
+    FROM BRONZE.CSV_FILE_2022._31DEC_SNAPSHOT_DATA s2
+    LEFT JOIN BRONZE.CSV_FILE_2022._30DEC_SNAPSHOT_DATA s1
+    ON s2.TRANSACTION_ID = s1.TRANSACTION_ID
+    WHERE s1.TRANSACTION_ID IS NULL 
+
+    UNION ALL
+
+    SELECT 
+        s2.TRANSACTION_ID,
+        COALESCE(s2.CITY, s1.CITY) AS CITY,
+        COALESCE(s2.STATE, s1.STATE) AS STATE,
+        COALESCE(s2.VALUE, s1.VALUE) AS VALUE,
+        COALESCE(s2.TAX, s1.TAX) AS TAX,
+        COALESCE(s2.PRODUCT, s1.PRODUCT) AS PRODUCT,
+        COALESCE(s2.DATE, s1.DATE) AS DATE,
+        COALESCE(s2.DB_TIMESTAMP, s1.DB_TIMESTAMP) AS DB_TIMESTAMP,
+        CURRENT_TIMESTAMP() AS ETL_TIMESTAMP,
+        'snapshot_31dec' AS SOURCE,
+        TRUE AS LATEST_VERSION_FLAG
+    FROM BRONZE.CSV_FILE_2022._31DEC_SNAPSHOT_DATA s2
+    INNER JOIN BRONZE.CSV_FILE_2022._30DEC_SNAPSHOT_DATA s1
+    ON s2.TRANSACTION_ID = s1.TRANSACTION_ID
+    WHERE (s2.CITY <> s1.CITY OR s2.STATE <> s1.STATE OR s2.VALUE <> s1.VALUE 
+        OR s2.TAX <> s1.TAX OR s2.PRODUCT <> s1.PRODUCT OR s2.DATE <> s1.DATE)  
+
+    UNION ALL
+
+    SELECT 
+        s1.TRANSACTION_ID,
+        s1.CITY,
+        s1.STATE,
+        s1.VALUE,
+        s1.TAX,
+        s1.PRODUCT,
+        s1.DATE,
+        s1.DB_TIMESTAMP,
+        CURRENT_TIMESTAMP() AS ETL_TIMESTAMP,
+        'snapshot_30dec' AS SOURCE,
+        FALSE AS LATEST_VERSION_FLAG
+    FROM BRONZE.CSV_FILE_2022._30DEC_SNAPSHOT_DATA s1
+    LEFT JOIN BRONZE.CSV_FILE_2022._31DEC_SNAPSHOT_DATA s2
+    ON s1.TRANSACTION_ID = s2.TRANSACTION_ID
+    WHERE s2.TRANSACTION_ID IS NULL  
+) AS source_data
+ON target.TRANSACTION_ID = source_data.TRANSACTION_ID
+WHEN MATCHED THEN
+    UPDATE SET
+        target.CITY = source_data.CITY,
+        target.STATE = source_data.STATE,
+        target.VALUE = source_data.VALUE,
+        target.TAX = source_data.TAX,
+        target.PRODUCT = source_data.PRODUCT,
+        target.DATE = source_data.DATE,
+        target.DB_TIMESTAMP = source_data.DB_TIMESTAMP,
+        target.ETL_TIMESTAMP = source_data.ETL_TIMESTAMP,
+        target.SOURCE = source_data.SOURCE,
+        target.LATEST_VERSION_FLAG = source_data.LATEST_VERSION_FLAG
+WHEN NOT MATCHED THEN
+    INSERT (TRANSACTION_ID, CITY, STATE, VALUE, TAX, PRODUCT, DATE, DB_TIMESTAMP, ETL_TIMESTAMP, SOURCE, LATEST_VERSION_FLAG)
+    VALUES (source_data.TRANSACTION_ID, source_data.CITY, source_data.STATE, source_data.VALUE, 
+        source_data.TAX, source_data.PRODUCT, source_data.DATE, source_data.DB_TIMESTAMP, 
+        source_data.ETL_TIMESTAMP, source_data.SOURCE, source_data.LATEST_VERSION_FLAG);
+
+
+
+select * from BRONZE.CSV_FILE_2022._RECONCILED_SNAPSHOT_DATA;
+
+
+---- create the fact_trans in silver
+
+USE DATABASE SILVER;
+
+CREATE SCHEMA CSV_FILE_2022;
+
+---- Assemble the data to create a fact_transaction in silver with the data needed 
+
+CREATE OR REPLACE TABLE SILVER.CSV_FILE_2022.FACT_TRANSACTION (
+    TRANSACTION_ID NUMBER(38,0) NOT NULL AUTOINCREMENT START 1 INCREMENT 1 NOORDER,  -- Autoincrement ID
+    CITY_ID NUMBER(38,0),
+    STATE_ID NUMBER(38,0) NOT NULL,  -- Assuming STATE_ID is numeric
+    MODEL_ID NUMBER(38,0),
+    VALUE FLOAT NOT NULL,
+    TAX FLOAT NOT NULL,
+    FULL_DATE DATE,  -- Will store date in yyyy-mm-dd format
+    etl_timestamp STRING, 
+    PRIMARY KEY (TRANSACTION_ID),
+    FOREIGN KEY (MODEL_ID) REFERENCES GOLD.EV_STAR.DIM_PRODUCT(MODEL_ID),
+    FOREIGN KEY (CITY_ID) REFERENCES GOLD.EV_STAR.DIM_CITY(CITY_ID)
+);
+
+
+
+INSERT INTO SILVER.CSV_FILE_2022.FACT_TRANSACTION (CITY_ID, STATE_ID, MODEL_ID, VALUE, TAX, FULL_DATE, etl_timestamp)
+SELECT 
+    c.CITY_ID, 
+    c.STATE_ID, 
+    p.MODEL_ID, 
+    s.VALUE, 
+    s.TAX, 
+    TO_DATE(s.DATE) AS FULL_DATE,
+    CURRENT_TIMESTAMP() AS ETL_TIMESTAMP
+FROM 
+    BRONZE.CSV_FILE_2022._reconciled_snapshot_data s
+JOIN 
+    GOLD.EV_STAR.DIM_CITY c 
+    ON s.CITY = c.NAME AND s.STATE = c.STATE
+JOIN 
+    GOLD.EV_STAR.DIM_PRODUCT p 
+    ON s.Product = p.NAME
+WHERE 
+    s.latest_version_flag = TRUE;
+
+
+
+select * from BRONZE.CSV_FILE_2022._reconciled_snapshot_data;
+
+
+select * from SILVER.CSV_FILE_2022.FACT_TRANSACTION;
+
+
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+------------------------------------------------ JSON FILES
+
+
+-- REMOVE @LANDING.LANDING.JSON_STAGE;
+
+
+SELECT 
+  f.value:transaction_id::STRING AS transaction_id,
+  f.value:CITY::STRING AS CITY,
+  f.value:STATE::STRING AS STATE,
+  f.value:VALUE::FLOAT AS VALUE,
+  f.value:TAX::FLOAT AS TAX,
+  f.value:Product::STRING AS Product,
+  f.value:DATE::STRING AS DATE,
+  f.value:ETL_timestamp::STRING AS DB_timestamp
+FROM 
+  @LANDING.JSON_STAGE/json_2024_one.json (FILE_FORMAT => LANDING.JSON_FILE_FORMAT) t,
+  LATERAL FLATTEN(input => t.$1) AS f;
+
+SELECT 
+  f.value:transaction_id::STRING AS transaction_id,
+  f.value:CITY::STRING AS CITY,
+  f.value:STATE::STRING AS STATE,
+  f.value:VALUE::FLOAT AS VALUE,
+  f.value:TAX::FLOAT AS TAX,
+  f.value:Product::STRING AS Product,
+  f.value:DATE::STRING AS DATE,
+  f.value:ETL_timestamp::STRING AS DB_timestamp
+FROM 
+  @LANDING.JSON_STAGE/json_2024_two.json (FILE_FORMAT => LANDING.JSON_FILE_FORMAT) t,
+  LATERAL FLATTEN(input => t.$1) AS f;
+
+
+--- create tables in bronze
+USE DATABASE BRONZE;
+
+CREATE SCHEMA json_2024;
+
+-- Create the table to store snapshot data with both DB_timestamp and etl_timestamp
+CREATE OR REPLACE TABLE BRONZE.json_2024._30dec_snapshot_data (
+    transaction_id STRING,
+    CITY STRING,
+    STATE STRING,
+    VALUE FLOAT,
+    TAX FLOAT,
+    Product STRING,
+    DATE STRING,
+    DB_timestamp STRING,  -- Keep the original ETL_timestamp as DB_timestamp
+    etl_timestamp STRING
+);
+
+CREATE OR REPLACE TABLE BRONZE.json_2024._31dec_snapshot_data (
+    transaction_id STRING,
+    CITY STRING,
+    STATE STRING,
+    VALUE FLOAT,
+    TAX FLOAT,
+    Product STRING,
+    DATE STRING,
+    DB_timestamp STRING,  -- Keep the original ETL_timestamp as DB_timestamp
+    etl_timestamp STRING
+);
+
+
+-- Insert data from the first snapshot (json_2024_one.json)
+INSERT INTO BRONZE.json_2024._30dec_snapshot_data
+SELECT 
+  f.value:transaction_id::STRING AS transaction_id,
+  f.value:CITY::STRING AS CITY,
+  f.value:STATE::STRING AS STATE,
+  f.value:VALUE::FLOAT AS VALUE,
+  f.value:TAX::FLOAT AS TAX,
+  f.value:Product::STRING AS Product,
+  f.value:DATE::STRING AS DATE,
+  f.value:ETL_timestamp::STRING AS DB_timestamp,  -- Store the original ETL_timestamp
+  CURRENT_TIMESTAMP() AS etl_timestamp
+FROM 
+  @LANDING.JSON_STAGE/json_2024_one.json (FILE_FORMAT => LANDING.JSON_FILE_FORMAT) t,
+  LATERAL FLATTEN(input => t.$1) AS f;
+
+-- Insert data from the second snapshot (json_2024_two.json)
+INSERT INTO BRONZE.json_2024._31dec_snapshot_data
+SELECT 
+  f.value:transaction_id::STRING AS transaction_id,
+  f.value:CITY::STRING AS CITY,
+  f.value:STATE::STRING AS STATE,
+  f.value:VALUE::FLOAT AS VALUE,
+  f.value:TAX::FLOAT AS TAX,
+  f.value:Product::STRING AS Product,
+  f.value:DATE::STRING AS DATE,
+  f.value:ETL_timestamp::STRING AS DB_timestamp,  -- Store the original ETL_timestamp
+  CURRENT_TIMESTAMP() AS etl_timestamp
+FROM 
+  @LANDING.JSON_STAGE/json_2024_two.json (FILE_FORMAT => LANDING.JSON_FILE_FORMAT) t,
+  LATERAL FLATTEN(input => t.$1) AS f;
+
+
+-- Create the reconciled snapshot table if it doesn't exist
+CREATE OR REPLACE TABLE BRONZE.json_2024._reconciled_snapshot_data (
+    transaction_id STRING,
+    CITY STRING,
+    STATE STRING,
+    VALUE FLOAT,
+    TAX FLOAT,
+    Product STRING,
+    DATE STRING,
+    DB_timestamp STRING,  -- Keep the original ETL_timestamp as DB_timestamp
+    etl_timestamp STRING,  -- Current ETL timestamp
+    source STRING,
+    latest_version_flag BOOLEAN  -- Indicates if the record is part of the latest snapshot
+);
+
+
+-- Initial load of the first file 30 Dec
+
+INSERT INTO BRONZE.json_2024._reconciled_snapshot_data (
+    transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, etl_timestamp, source, latest_version_flag
+)
+SELECT 
+    transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, 
+    CURRENT_TIMESTAMP() AS etl_timestamp, 
+    'snapshot_30dec' AS source,
+    TRUE AS latest_version_flag
+FROM BRONZE.json_2024._30dec_snapshot_data;
+
+
+
+MERGE INTO BRONZE.json_2024._reconciled_snapshot_data AS target
+USING (
+    SELECT -- New Rows
+        s2.transaction_id,
+        s2.CITY,
+        s2.STATE,
+        s2.VALUE,
+        s2.TAX,
+        s2.Product,
+        s2.DATE,
+        s2.DB_timestamp,
+        CURRENT_TIMESTAMP() AS etl_timestamp,
+        'snapshot_31dec' AS source,
+        TRUE AS latest_version_flag
+    FROM BRONZE.json_2024._31dec_snapshot_data s2
+    LEFT JOIN BRONZE.json_2024._30dec_snapshot_data s1
+    ON s2.transaction_id = s1.transaction_id
+    WHERE s1.transaction_id IS NULL  -- New rows
+
+    UNION ALL
+
+    SELECT -- Updated Rows
+        s2.transaction_id,
+        COALESCE(s2.CITY, s1.CITY) AS CITY,
+        COALESCE(s2.STATE, s1.STATE) AS STATE,
+        COALESCE(s2.VALUE, s1.VALUE) AS VALUE,
+        COALESCE(s2.TAX, s1.TAX) AS TAX,
+        COALESCE(s2.Product, s1.Product) AS Product,
+        COALESCE(s2.DATE, s1.DATE) AS DATE,
+        COALESCE(s2.DB_timestamp, s1.DB_timestamp) AS DB_timestamp,
+        CURRENT_TIMESTAMP() AS etl_timestamp,
+        'snapshot_31dec' AS source,
+        TRUE AS latest_version_flag
+    FROM BRONZE.json_2024._31dec_snapshot_data s2
+    INNER JOIN BRONZE.json_2024._30dec_snapshot_data s1
+    ON s2.transaction_id = s1.transaction_id
+    WHERE (s2.CITY <> s1.CITY OR s2.STATE <> s1.STATE OR s2.VALUE <> s1.VALUE 
+        OR s2.TAX <> s1.TAX OR s2.Product <> s1.Product OR s2.DATE <> s1.DATE)  
+
+    UNION ALL
+
+    SELECT -- Deleted Rows (latest_version_flag = FALSE)
+        s1.transaction_id,
+        s1.CITY,
+        s1.STATE,
+        s1.VALUE,
+        s1.TAX,
+        s1.Product,
+        s1.DATE,
+        s1.DB_timestamp,
+        CURRENT_TIMESTAMP() AS etl_timestamp,
+        'snapshot_30dec' AS source,
+        FALSE AS latest_version_flag
+    FROM BRONZE.json_2024._30dec_snapshot_data s1
+    LEFT JOIN BRONZE.json_2024._31dec_snapshot_data s2
+    ON s1.transaction_id = s2.transaction_id
+    WHERE s2.transaction_id IS NULL  -- Deleted rows
+) AS source_data
+ON target.transaction_id = source_data.transaction_id
+WHEN MATCHED THEN
+    UPDATE SET
+        target.CITY = source_data.CITY,
+        target.STATE = source_data.STATE,
+        target.VALUE = source_data.VALUE,
+        target.TAX = source_data.TAX,
+        target.Product = source_data.Product,
+        target.DATE = source_data.DATE,
+        target.DB_timestamp = source_data.DB_timestamp,
+        target.etl_timestamp = source_data.etl_timestamp,
+        target.source = source_data.source,
+        target.latest_version_flag = source_data.latest_version_flag
+WHEN NOT MATCHED THEN
+    INSERT (transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, etl_timestamp, source, latest_version_flag)
+    VALUES (source_data.transaction_id, source_data.CITY, source_data.STATE, source_data.VALUE, 
+        source_data.TAX, source_data.Product, source_data.DATE, source_data.DB_timestamp, 
+        source_data.etl_timestamp, source_data.source, source_data.latest_version_flag);
+
+
+
+
+-- Retrieve all valid records as of 31 Dec, excluding deleted ones
+
+select * from BRONZE.json_2024._reconciled_snapshot_data
+where latest_version_flag = true
+;
+
+
+---- Assemble the data to create a fact_transaction in silver with the data needed 
+
+CREATE OR REPLACE TABLE SILVER.JSON_2024.FACT_TRANSACTION (
+    TRANSACTION_ID NUMBER(38,0) NOT NULL AUTOINCREMENT START 1 INCREMENT 1 NOORDER,  -- Autoincrement ID
+    CITY_ID NUMBER(38,0),
+    STATE_ID NUMBER(38,0) NOT NULL,  -- Assuming STATE_ID is numeric
+    MODEL_ID NUMBER(38,0),
+    VALUE FLOAT NOT NULL,
+    TAX FLOAT NOT NULL,
+    FULL_DATE DATE,  -- Will store date in yyyy-mm-dd format
+    etl_timestamp STRING, 
+    PRIMARY KEY (TRANSACTION_ID),
+    FOREIGN KEY (MODEL_ID) REFERENCES GOLD.EV_STAR.DIM_PRODUCT(MODEL_ID),
+    FOREIGN KEY (CITY_ID) REFERENCES GOLD.EV_STAR.DIM_CITY(CITY_ID)
+);
+
+
+INSERT INTO SILVER.JSON_2024.FACT_TRANSACTION (CITY_ID, STATE_ID, MODEL_ID, VALUE, TAX, FULL_DATE, etl_timestamp)
+SELECT 
+    c.CITY_ID, 
+    c.STATE_ID, 
+    p.MODEL_ID, 
+    s.VALUE, 
+    s.TAX, 
+    TO_DATE(s.DATE, 'DD/MM/YYYY HH24:MI:SS') AS FULL_DATE,
+    CURRENT_TIMESTAMP() AS etl_timestamp
+FROM 
+    BRONZE.json_2024._reconciled_snapshot_data s
+JOIN 
+    GOLD.EV_STAR.DIM_CITY c 
+    ON s.CITY = c.NAME AND s.STATE = c.STATE
+JOIN 
+    GOLD.EV_STAR.DIM_PRODUCT p 
+    ON s.Product = p.NAME
+WHERE 
+    s.latest_version_flag = TRUE;
+
+
+select * from SILVER.JSON_2024.FACT_TRANSACTION
+
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+
+---- Merging all silver into gold
+
+INSERT INTO GOLD.EV_STAR.FACT_TRANSACTION (
+    TRANSACTION_ID, 
+    CITY_ID, 
+    STATE_ID, 
+    MODEL_ID, 
+    VALUE, 
+    TAX, 
+    DATE_ID, 
+    SOURCE
+)
+SELECT 
+    TRANSACTION_ID, 
+    CITY_ID, 
+    STATE_ID, 
+    MODEL_ID, 
+    VALUE, 
+    TAX, 
+    FULL_DATE AS DATE_ID,
+    'CSV_FILE_2022' AS SOURCE  -- Define the source
+FROM 
+    SILVER.CSV_FILE_2022.FACT_TRANSACTION
+
+UNION ALL
+
+SELECT 
+    TRANSACTION_ID, 
+    CITY_ID, 
+    STATE_ID, 
+    MODEL_ID, 
+    VALUE, 
+    TAX, 
+    FULL_DATE AS DATE_ID,
+    'JSON_2024' AS SOURCE  -- Define the source
+FROM 
+    SILVER.JSON_2024.FACT_TRANSACTION
+
+UNION ALL
+
+SELECT 
+    TRANSACTION_ID, 
+    CITY_ID, 
+    STATE_ID, 
+    MODEL_ID, 
+    VALUE, 
+    TAX, 
+    FULL_DATE AS DATE_ID,
+    'DB_2024' AS SOURCE  -- Define the source
+FROM 
+    SILVER.DB_2O24.FACT_TRANSACTION;
+
+
+SELECT * FROM GOLD.EV_STAR.FACT_TRANSACTION;
+
+
+
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+----------------------------------------------------------------
+--- I need to add STRIP_OUTER_ARRAY = TRUE; to file format to work but it does not retrieve all columns despite *
+SELECT *
+  FROM TABLE(
+    INFER_SCHEMA(
+      LOCATION => '@LANDING.JSON_STAGE/json_2024_one.json',
+    FILE_FORMAT => 'LANDING.JSON_FILE_FORMAT'
+      )
+    );
