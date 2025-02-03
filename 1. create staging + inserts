@@ -1,0 +1,50 @@
+
+
+-- fact_transaction, city id, state id, model id, value, tax, transaction id, date YYYY-MM-DD
+-- dim_city id, name, state, population, charging stations id
+-- dim_charging station id, city id, address
+-- dim_product, model id, name, year_release, autonomy_hours, 
+-- dim_date full date, day, day name, day of week, week number, month, month name, year, for 2021-2024
+-- dim_sales_Targets TARGET_ID, PRODUCT_ID, TARGET_VALUE, month, year 
+
+
+CREATE STAGE LANDING.LANDING.CSV_STAGE
+  FILE_FORMAT = (TYPE = 'CSV' FIELD_OPTIONALLY_ENCLOSED_BY = '"' SKIP_HEADER = 1)
+  DIRECTORY = (ENABLE = TRUE)
+  COMMENT = 'Stage for CSV files in the LANDING schema of the LANDING database';
+
+
+CREATE STAGE LANDING.LANDING.JSON_STAGE
+  FILE_FORMAT = (TYPE = 'JSON')
+  DIRECTORY = (ENABLE = TRUE)
+  COMMENT = 'Stage for JSON files in the LANDING schema of the LANDING database';
+
+
+CREATE or replace FILE FORMAT LANDING.CSV_FILE_FORMAT
+  TYPE = 'CSV'
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+  SKIP_HEADER = 1
+  FIELD_DELIMITER = '\t'  -- Updated to use tab delimiter
+  NULL_IF = ('NULL', 'null');
+
+
+    -- Create a file format for CSV
+CREATE OR REPLACE FILE FORMAT LANDING.CSV_FILE_FORMAT 
+  TYPE = 'CSV' 
+  FIELD_DELIMITER = ',' 
+  SKIP_HEADER = 1 
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+  NULL_IF = ('NULL', 'null');
+
+
+-- Create a file format for JSON
+CREATE OR REPLACE FILE FORMAT LANDING.JSON_FILE_FORMAT 
+  TYPE = 'JSON'
+  ;
+
+
+ CREATE FILE FORMAT LANDING.JSON_FILE_FORMAT
+  TYPE = 'JSON'
+  COMPRESSION = 'AUTO';
+
+
