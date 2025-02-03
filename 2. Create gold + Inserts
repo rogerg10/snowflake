@@ -1,0 +1,175 @@
+use database gold;
+
+Create schema EV_STAR;
+
+use schema EV_STAR;
+
+-- Dimension: City
+CREATE OR REPLACE TABLE dim_city (
+    city_id INT AUTOINCREMENT PRIMARY KEY,
+    name STRING UNIQUE NOT NULL,
+    state STRING NOT NULL,
+    state_id INT,    
+    population INT,
+    charging_station_id INT
+);
+
+-- Dimension: Charging Station
+CREATE OR REPLACE TABLE dim_charging_station (
+    charging_station_id INT AUTOINCREMENT PRIMARY KEY,
+    city_id INT REFERENCES dim_city(city_id),
+    address STRING NOT NULL
+);
+
+-- Dimension: Product
+CREATE OR REPLACE TABLE dim_product (
+    model_id INT AUTOINCREMENT PRIMARY KEY,
+    name STRING UNIQUE NOT NULL,
+    year_release INT,
+    autonomy_hours INT
+);
+
+-- Dimension: Date
+CREATE OR REPLACE TABLE dim_date (
+    full_date DATE PRIMARY KEY,
+    day INT,
+    day_name STRING,
+    day_of_week INT,
+    week_number INT,
+    month INT,
+    month_name STRING,
+    year INT
+);
+
+-- Dimension: Sales Targets
+CREATE OR REPLACE TABLE dim_sales_targets (
+    target_id INT AUTOINCREMENT PRIMARY KEY,
+    product_id INT REFERENCES dim_product(model_id),
+    city_id INT REFERENCES dim_city(city_id),
+    target_value INT NOT NULL,
+    month INT NOT NULL,
+    year INT NOT NULL
+);
+
+-- Fact Table: Transactions
+CREATE OR REPLACE TABLE fact_transaction (
+    transaction_id INT AUTOINCREMENT PRIMARY KEY,
+    city_id INT REFERENCES dim_city(city_id),
+    state_id STRING NOT NULL,
+    model_id INT REFERENCES dim_product(model_id),
+    value FLOAT NOT NULL,
+    tax FLOAT NOT NULL,
+    date_id DATE REFERENCES dim_date(full_date)
+);
+
+
+
+-- Insert sample cities with populations
+INSERT INTO dim_city (name, state, state_id, population) VALUES
+('Melbourne', 'Victoria', 1, 5000000),
+('Sydney', 'New South Wales', 2, 5500000),
+('Brisbane', 'Queensland', 3, 2500000),
+('Perth', 'Western Australia', 4, 2200000),
+('Adelaide', 'South Australia', 5, 1400000),
+('Hobart', 'Tasmania', 6, 250000),
+('Darwin', 'Northern Territory', 7, 150000),
+('Canberra', 'Australian Capital Territory', 8, 450000);
+
+-- Insert more charging stations (tripled from original amount)
+INSERT INTO dim_charging_station (city_id, address) VALUES
+(1, '123 Bourke St, Melbourne, VIC'),
+(1, '456 Collins St, Melbourne, VIC'),
+(1, '789 Swanston St, Melbourne, VIC'),
+(1, '101 Lygon St, Melbourne, VIC'),
+(1, '22 Flinders St, Melbourne, VIC'),
+(1, '330 Chapel St, Melbourne, VIC'),
+(1, '440 St Kilda Rd, Melbourne, VIC'),
+(1, '550 Spencer St, Melbourne, VIC'),
+(1, '660 Exhibition St, Melbourne, VIC'),
+(1, '770 Victoria Parade, Melbourne, VIC'),
+(1, '880 Latrobe St, Melbourne, VIC'),
+(1, '990 Bourke St, Melbourne, VIC'),
+(1, '111 Collins St, Melbourne, VIC'),
+(1, '222 Queen St, Melbourne, VIC'),
+(1, '333 Elizabeth St, Melbourne, VIC'),
+(2, '123 Pitt St, Sydney, NSW'),
+(2, '234 George St, Sydney, NSW'),
+(2, '345 King St, Sydney, NSW'),
+(2, '456 Broadway, Sydney, NSW'),
+(2, '567 Oxford St, Sydney, NSW'),
+(2, '678 Martin Pl, Sydney, NSW'),
+(2, '789 Macquarie St, Sydney, NSW'),
+(2, '890 Darling Harbour, Sydney, NSW'),
+(2, '901 Circular Quay, Sydney, NSW'),
+(2, '100 Market St, Sydney, NSW'),
+(2, '200 Kent St, Sydney, NSW'),
+(2, '300 Sussex St, Sydney, NSW'),
+(2, '400 Liverpool St, Sydney, NSW'),
+(2, '500 York St, Sydney, NSW'),
+(2, '600 Bourke St, Sydney, NSW'),
+(3, '50 Queen St, Brisbane, QLD'),
+(3, '60 Ann St, Brisbane, QLD'),
+(3, '70 Edward St, Brisbane, QLD'),
+(3, '80 Turbot St, Brisbane, QLD'),
+(3, '90 Adelaide St, Brisbane, QLD'),
+(3, '100 Creek St, Brisbane, QLD'),
+(3, '110 Margaret St, Brisbane, QLD'),
+(3, '120 Alice St, Brisbane, QLD'),
+(3, '130 Mary St, Brisbane, QLD'),
+(3, '140 Wickham St, Brisbane, QLD'),
+(3, '150 Brunswick St, Brisbane, QLD'),
+(3, '160 Boundary St, Brisbane, QLD'),
+(3, '170 Kelvin Grove Rd, Brisbane, QLD'),
+(3, '180 Musgrave Rd, Brisbane, QLD'),
+(3, '190 Park Rd, Brisbane, QLD');
+
+
+-- Insert product details (assumed values)
+INSERT INTO dim_product (name, year_release, autonomy_hours) VALUES
+('Model X', 2020, 450),
+('Model S', 2019, 500),
+('Model 3', 2021, 400),
+('Cybertruck', 2023, 600);
+
+
+
+-- populate dim dimension
+INSERT INTO T5_PRESENTATION.EV_STAR.DIM_DATE (
+    FULL_DATE,
+    DAY,
+    DAY_NAME,
+    DAY_OF_WEEK,
+    WEEK_NUMBER,
+    MONTH,
+    MONTH_NAME,
+    YEAR
+)
+SELECT 
+    t.$1 AS FULL_DATE,
+    t.$2 AS DAY,
+    t.$3 AS DAY_NAME,
+    t.$4 AS DAY_OF_WEEK,
+    t.$5 AS WEEK_NUMBER,
+    t.$6 AS MONTH,
+    t.$7 AS MONTH_NAME,
+    t.$8 AS YEAR
+FROM @LANDING.CSV_STAGE/dim_date.csv (FILE_FORMAT => LANDING.CSV_FILE_FORMAT) t;
+
+
+-- inserto dummy targets
+INSERT INTO T5_PRESENTATION.EV_STAR.DIM_SALES_TARGETS (
+    PRODUCT_ID,
+    CITY_ID,
+    TARGET_VALUE,
+    MONTH,
+    YEAR
+)
+SELECT 
+    t.$1 AS PRODUCT_ID,
+    t.$2 AS CITY_ID,
+    t.$3 AS TARGET_VALUE,
+    t.$4 AS MONTH,
+    t.$5 AS YEAR
+FROM @LANDING.CSV_STAGE/sales_targets.csv (FILE_FORMAT => LANDING.CSV_FILE_FORMAT) t
+;
+
