@@ -1,0 +1,242 @@
+-- Step 1: Select and Flatten JSON Data
+-- The following SQL statements select data from JSON files stored in the @LANDING.JSON_STAGE, flatten the JSON array, 
+-- and extract the necessary fields into columns. Two separate files are processed.
+
+-- First JSON file (json_2024_one.json)
+SELECT 
+  f.value:transaction_id::STRING AS transaction_id,
+  f.value:CITY::STRING AS CITY,
+  f.value:STATE::STRING AS STATE,
+  f.value:VALUE::FLOAT AS VALUE,
+  f.value:TAX::FLOAT AS TAX,
+  f.value:Product::STRING AS Product,
+  f.value:DATE::STRING AS DATE,
+  f.value:ETL_timestamp::STRING AS DB_timestamp
+FROM 
+  @LANDING.JSON_STAGE/json_2024_one.json (FILE_FORMAT => LANDING.JSON_FILE_FORMAT) t,
+  LATERAL FLATTEN(input => t.$1) AS f;
+
+-- Second JSON file (json_2024_two.json)
+SELECT 
+  f.value:transaction_id::STRING AS transaction_id,
+  f.value:CITY::STRING AS CITY,
+  f.value:STATE::STRING AS STATE,
+  f.value:VALUE::FLOAT AS VALUE,
+  f.value:TAX::FLOAT AS TAX,
+  f.value:Product::STRING AS Product,
+  f.value:DATE::STRING AS DATE,
+  f.value:ETL_timestamp::STRING AS DB_timestamp
+FROM 
+  @LANDING.JSON_STAGE/json_2024_two.json (FILE_FORMAT => LANDING.JSON_FILE_FORMAT) t,
+  LATERAL FLATTEN(input => t.$1) AS f;
+
+
+-- Step 2: Create Schema and Tables in Bronze
+-- We create a schema (`json_2024`) and tables to store the snapshot data (30 Dec and 31 Dec).
+
+-- Create schema for 2024 JSON data
+USE DATABASE BRONZE;
+CREATE SCHEMA json_2024;
+
+-- Create table for snapshot data for 30 Dec
+CREATE OR REPLACE TABLE BRONZE.json_2024._30dec_snapshot_data (
+    transaction_id STRING,
+    CITY STRING,
+    STATE STRING,
+    VALUE FLOAT,
+    TAX FLOAT,
+    Product STRING,
+    DATE STRING,
+    DB_timestamp STRING,  -- Original ETL timestamp as DB_timestamp
+    etl_timestamp STRING
+);
+
+-- Create table for snapshot data for 31 Dec
+CREATE OR REPLACE TABLE BRONZE.json_2024._31dec_snapshot_data (
+    transaction_id STRING,
+    CITY STRING,
+    STATE STRING,
+    VALUE FLOAT,
+    TAX FLOAT,
+    Product STRING,
+    DATE STRING,
+    DB_timestamp STRING,  -- Original ETL timestamp as DB_timestamp
+    etl_timestamp STRING
+);
+
+
+-- Step 3: Insert Data into Bronze Tables
+-- Insert data from the two JSON files into the tables we just created (30 Dec and 31 Dec).
+
+-- Insert data from json_2024_one.json into the 30 Dec snapshot
+INSERT INTO BRONZE.json_2024._30dec_snapshot_data
+SELECT 
+  f.value:transaction_id::STRING AS transaction_id,
+  f.value:CITY::STRING AS CITY,
+  f.value:STATE::STRING AS STATE,
+  f.value:VALUE::FLOAT AS VALUE,
+  f.value:TAX::FLOAT AS TAX,
+  f.value:Product::STRING AS Product,
+  f.value:DATE::STRING AS DATE,
+  f.value:ETL_timestamp::STRING AS DB_timestamp,  -- Store original ETL_timestamp
+  CURRENT_TIMESTAMP() AS etl_timestamp  -- Capture the current ETL timestamp
+FROM 
+  @LANDING.JSON_STAGE/json_2024_one.json (FILE_FORMAT => LANDING.JSON_FILE_FORMAT) t,
+  LATERAL FLATTEN(input => t.$1) AS f;
+
+-- Insert data from json_2024_two.json into the 31 Dec snapshot
+INSERT INTO BRONZE.json_2024._31dec_snapshot_data
+SELECT 
+  f.value:transaction_id::STRING AS transaction_id,
+  f.value:CITY::STRING AS CITY,
+  f.value:STATE::STRING AS STATE,
+  f.value:VALUE::FLOAT AS VALUE,
+  f.value:TAX::FLOAT AS TAX,
+  f.value:Product::STRING AS Product,
+  f.value:DATE::STRING AS DATE,
+  f.value:ETL_timestamp::STRING AS DB_timestamp,  -- Store original ETL_timestamp
+  CURRENT_TIMESTAMP() AS etl_timestamp  -- Capture the current ETL timestamp
+FROM 
+  @LANDING.JSON_STAGE/json_2024_two.json (FILE_FORMAT => LANDING.JSON_FILE_FORMAT) t,
+  LATERAL FLATTEN(input => t.$1) AS f;
+
+
+-- Step 4: Create Reconciled Snapshot Table
+-- The reconciled snapshot table will store the latest version of data and also keep track of the source 
+-- and whether a row is part of the latest snapshot.
+
+-- Create reconciled snapshot table if it doesn't exist
+CREATE OR REPLACE TABLE BRONZE.json_2024._reconciled_snapshot_data (
+    transaction_id STRING,
+    CITY STRING,
+    STATE STRING,
+    VALUE FLOAT,
+    TAX FLOAT,
+    Product STRING,
+    DATE STRING,
+    DB_timestamp STRING,  -- Store original ETL timestamp as DB_timestamp
+    etl_timestamp STRING,  -- Capture the current ETL timestamp
+    source STRING,
+    latest_version_flag BOOLEAN  -- Indicates if the record is part of the latest snapshot
+);
+
+-- Step 5: Insert Data into Reconciled Snapshot Table (First Insert - 30 Dec)
+-- Load data from 30 Dec snapshot into the reconciled table with the source as 'snapshot_30dec'.
+
+INSERT INTO BRONZE.json_2024._reconciled_snapshot_data (
+    transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, etl_timestamp, source, latest_version_flag
+)
+SELECT 
+    transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, 
+    CURRENT_TIMESTAMP() AS etl_timestamp,  -- Set current timestamp
+    'snapshot_30dec' AS source,  -- Set source label
+    TRUE AS latest_version_flag  -- Mark as latest version
+FROM BRONZE.json_2024._30dec_snapshot_data;
+
+
+-- Step 6: Merge Data into Reconciled Snapshot Table (for 31 Dec)
+-- Merge new rows, updated rows, and deleted rows from 31 Dec snapshot into the reconciled table.
+
+MERGE INTO BRONZE.json_2024._reconciled_snapshot_data AS target
+USING (
+    SELECT -- New Rows
+        s2.transaction_id,
+        s2.CITY,
+        s2.STATE,
+        s2.VALUE,
+        s2.TAX,
+        s2.Product,
+        s2.DATE,
+        s2.DB_timestamp,
+        CURRENT_TIMESTAMP() AS etl_timestamp,
+        'snapshot_31dec' AS source,
+        TRUE AS latest_version_flag
+    FROM BRONZE.json_2024._31dec_snapshot_data s2
+    LEFT JOIN BRONZE.json_2024._30dec_snapshot_data s1
+    ON s2.transaction_id = s1.transaction_id
+    WHERE s1.transaction_id IS NULL  -- New rows
+
+    UNION ALL
+
+    SELECT -- Updated Rows
+        s2.transaction_id,
+        COALESCE(s2.CITY, s1.CITY) AS CITY,
+        COALESCE(s2.STATE, s1.STATE) AS STATE,
+        COALESCE(s2.VALUE, s1.VALUE) AS VALUE,
+        COALESCE(s2.TAX, s1.TAX) AS TAX,
+        COALESCE(s2.Product, s1.Product) AS Product,
+        COALESCE(s2.DATE, s1.DATE) AS DATE,
+        COALESCE(s2.DB_timestamp, s1.DB_timestamp) AS DB_timestamp,
+        CURRENT_TIMESTAMP() AS etl_timestamp,
+        'snapshot_31dec' AS source,
+        TRUE AS latest_version_flag
+    FROM BRONZE.json_2024._31dec_snapshot_data s2
+    INNER JOIN BRONZE.json_2024._30dec_snapshot_data s1
+    ON s2.transaction_id = s1.transaction_id
+    WHERE (s2.CITY <> s1.CITY OR s2.STATE <> s1.STATE OR s2.VALUE <> s1.VALUE 
+        OR s2.TAX <> s1.TAX OR s2.Product <> s1.Product OR s2.DATE <> s1.DATE)  
+
+    UNION ALL
+
+    SELECT -- Deleted Rows (latest_version_flag = FALSE)
+        s1.transaction_id,
+        s1.CITY,
+        s1.STATE,
+        s1.VALUE,
+        s1.TAX,
+        s1.Product,
+        s1.DATE,
+        s1.DB_timestamp,
+        CURRENT_TIMESTAMP() AS etl_timestamp,
+        'snapshot_30dec' AS source,
+        FALSE AS latest_version_flag
+    FROM BRONZE.json_2024._30dec_snapshot_data s1
+    LEFT JOIN BRONZE.json_2024._31dec_snapshot_data s2
+    ON s1.transaction_id = s2.transaction_id
+    WHERE s2.transaction_id IS NULL  -- Deleted rows
+) AS source_data
+ON target.transaction_id = source_data.transaction_id
+WHEN MATCHED THEN
+    UPDATE SET
+        target.CITY = source_data.CITY,
+        target.STATE = source_data.STATE,
+        target.VALUE = source_data.VALUE,
+        target.TAX = source_data.TAX,
+        target.Product = source_data.Product,
+        target.DATE = source_data.DATE,
+        target.DB_timestamp = source_data.DB_timestamp,
+        target.etl_timestamp = source_data.etl_timestamp,
+        target.source = source_data.source,
+        target.latest_version_flag = source_data.latest_version_flag
+WHEN NOT MATCHED THEN
+    INSERT (transaction_id, CITY, STATE, VALUE, TAX, Product, DATE, DB_timestamp, etl_timestamp, source, latest_version_flag)
+    VALUES (source_data.transaction_id, source_data.CITY, source_data.STATE, source_data.VALUE, 
+        source_data.TAX, source_data.Product, source_data.DATE, source_data.DB_timestamp, 
+        source_data.etl_timestamp, source_data.source, source_data.latest_version_flag);
+
+
+-- Step 7: Retrieve Valid Records from Reconciled Snapshot
+-- Retrieve all records that are part of the latest snapshot (latest_version_flag = true), excluding deleted rows.
+
+SELECT * 
+FROM BRONZE.json_2024._reconciled_snapshot_data
+WHERE latest_version_flag = TRUE;
+
+
+-- Step 8: Create Fact Table in Silver Layer
+-- Create the fact table in the Silver layer (FACT_TRANSACTION) with necessary columns, including foreign keys.
+
+CREATE OR REPLACE TABLE SILVER.JSON_2024.FACT_TRANSACTION (
+    TRANSACTION_ID NUMBER(38,0) NOT NULL AUTOINCREMENT START 1 INCREMENT 1 NOORDER,  -- Autoincrement ID
+    CITY_ID NUMBER(38,0),
+    STATE_ID NUMBER(38,0) NOT NULL,  -- Assuming STATE_ID is numeric
+    MODEL_ID NUMBER(38,0),
+    VALUE FLOAT NOT NULL,
+    TAX FLOAT NOT NULL,
+    FULL_DATE DATE,  -- Store date in yyyy-mm-dd format
+    etl_timestamp STRING, 
+    PRIMARY KEY (TRANSACTION_ID),
+    FOREIGN KEY (MODEL_ID) REFERENCES DIM_MODEL(MODEL_ID),
+    FOREIGN KEY (CITY_ID) REFERENCES DIM_CITY(CITY_ID),
+    FOREIGN KEY (STATE_ID) REFERENCES DIM_STATE(STATE_ID)
+);
